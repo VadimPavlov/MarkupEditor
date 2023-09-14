@@ -6,11 +6,13 @@
 //
 
 import UIKit
+import SwiftUI
 
 public class ToolbarStyle: ObservableObject {
     
     static let compact = ToolbarStyle(.compact)
     static let labeled = ToolbarStyle(.labeled)
+    static var accentColor = Color.accentColor
     
     var style: Style
     

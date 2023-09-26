@@ -29,7 +29,7 @@ struct TableSizer: View {
     let maxRows: Int = 6
     let maxCols: Int = 8
     let cellSize: CGFloat = 16
-    let sizedColor = Color.accentColor.opacity(0.2)
+    let sizedColor = ToolbarStyle.accentColor.opacity(0.2)
     //TODO: A hack, but I cannot find a way for the padding on the popover to look right in both environments
     #if targetEnvironment(macCatalyst)
     let topPadding: CGFloat = 8
@@ -83,7 +83,7 @@ struct TableSizer: View {
                             ForEach(0..<maxCols, id: \.self) { col in
                                 Rectangle()
                                     .frame(width: cellSize, height: cellSize)
-                                    .border(Color.accentColor)
+                                    .border(ToolbarStyle.accentColor)
                                     .background(Color.clear)
                                     .foregroundColor(Color.clear)
                                     .contentShape(Rectangle())

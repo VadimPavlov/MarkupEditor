@@ -47,7 +47,7 @@ public class MarkupToolbarUIView: UIView {
         let markupToolbarHC = UIHostingController(rootView: markupToolbar)
         addSubview(markupToolbarHC.view)
         markupToolbarHC.view.translatesAutoresizingMaskIntoConstraints = false
-        if MarkupEditor.toolbarLocation == .top {
+        if MarkupEditor.toolbarLocation == .top || MarkupEditor.toolbarLocation == .keyboard {
             NSLayoutConstraint.activate([
                 markupToolbarHC.view.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor),
                 markupToolbarHC.view.heightAnchor.constraint(equalToConstant: MarkupEditor.toolbarStyle.height()),
@@ -76,7 +76,10 @@ public class MarkupToolbarUIView: UIView {
     /// Return a MarkupToolbarUIView that is compact, containing the current shared ToolbarContents, but makes sure keyboardButton is present.
     public static func inputAccessory(markupDelegate: MarkupDelegate? = nil) -> MarkupToolbarUIView {
         let contents = ToolbarContents.from(ToolbarContents.shared)
-        return MarkupToolbarUIView(.compact, contents: contents, markupDelegate: markupDelegate, withKeyboardButton: true).makeManaged()
+        let toolbar = MarkupToolbarUIView(.compact, contents: contents, markupDelegate: markupDelegate, withKeyboardButton: true).makeManaged()
+        toolbar.translatesAutoresizingMaskIntoConstraints = false
+        toolbar.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        return toolbar
     }
     
 }

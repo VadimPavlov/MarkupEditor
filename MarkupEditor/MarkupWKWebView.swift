@@ -9,6 +9,7 @@
 import SwiftUI
 import WebKit
 import Combine
+import OSLog
 
 /// A specialized WKWebView used to support WYSIWYG editing in Swift.
 ///
@@ -38,7 +39,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     public typealias TableDirection = MarkupEditor.TableDirection
     public typealias FindDirection = MarkupEditor.FindDirection
     private let selectionState = SelectionState()       // Locally cached, specific to this view
-    let bodyMargin: Int = 8                             // As specified in markup.css. Needed to adjust clientHeight
+    public var clientHeightPad: Int = 8                 // Value to adjust html clientHeight
     public private(set) var isReady: Bool = false       // Ready for editing
     public var hasFocus: Bool = false
     private var editorHeight: Int = 0
@@ -64,8 +65,23 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     /// Track whether a paste action has been invoked so as to avoid double-invocation per https://developer.apple.com/forums/thread/696525
     var pastedAsync = false
     /// An accessoryView to override the inputAccessoryView of UIResponder.
-    public var accessoryView: UIView?
-    private var markupToolbarUIView: MarkupToolbarUIView!
+    public var accessoryView: UIView? {
+        didSet {
+            guard let accessoryView else {
+                // Remove height constraints and notification observers if accessoryView was set to nil
+                markupToolbarHeightConstraint = nil
+                NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardWillShowNotification, object: nil)
+                NotificationCenter.default.removeObserver(self, name: UIResponder.keyboardDidHideNotification, object: nil)
+                return
+            }
+            markupToolbarHeightConstraint = NSLayoutConstraint(item: accessoryView, attribute: .height, relatedBy: .equal, toItem: nil, attribute: .height, multiplier: 1, constant: 0)
+            markupToolbarHeightConstraint.isActive = true
+            // Use the keyboard notifications to resize the markupToolbar as the accessoryView
+            NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillShow), name: UIResponder.keyboardWillShowNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(keyboardDidHide), name: UIResponder.keyboardDidHideNotification, object: nil)
+        }
+    }
+    private var oldContentOffset: CGPoint?
     private var markupToolbarHeightConstraint: NSLayoutConstraint!
     private var firstResponder: AnyCancellable?
     
@@ -113,6 +129,8 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     /// which in turn loads the css and js scripts itself. The markup.html defines the "editor" element, which
     /// is later populated with html.
     private func initForEditing() {
+        isOpaque = false                        // Eliminate flash in dark mode
+        backgroundColor = .systemBackground     // Eliminate flash in dark mode
         initRootFiles()
         markupDelegate?.markupSetup(self)
         // Enable drop interaction
@@ -126,15 +144,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
         tintColor = tintColor.resolvedColor(with: .current)
         // Set up the accessoryView to be a MarkupToolbarUIView only if toolbarLocation == .keyboard
         if MarkupEditor.toolbarLocation == .keyboard {
-            markupToolbarUIView = MarkupToolbarUIView.inputAccessory(markupDelegate: markupDelegate)
-            markupToolbarUIView.translatesAutoresizingMaskIntoConstraints = false
-            markupToolbarUIView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            markupToolbarHeightConstraint = NSLayoutConstraint(item: markupToolbarUIView!, attribute: .height, relatedBy: .equal, toItem: nil, attribute: .height, multiplier: 1, constant: 0)
-            markupToolbarHeightConstraint.isActive = true
-            accessoryView = markupToolbarUIView
-            // Use the keyboard notifications to resize the markupToolbar as the accessoryView
-            NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillShow), name: UIResponder.keyboardWillShowNotification, object: nil)
-            NotificationCenter.default.addObserver(self, selector: #selector(keyboardDidHide), name: UIResponder.keyboardDidHideNotification, object: nil)
+            inputAccessoryView = MarkupToolbarUIView.inputAccessory(markupDelegate: markupDelegate)
         }
         observeFirstResponder()
     }
@@ -160,7 +170,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
         guard isReady else { return }
         if becomeFirstResponder() {
             MarkupEditor.selectedWebView = self
-            //print("*** Became first responder \(id)")
+            //Logger.webView.debug("*** Became first responder \(id)")
             if !hasFocus {     // Do nothing if we are already focused
                 focus {        // Else focus and setSelection properly
                     self.setSelection()
@@ -189,7 +199,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
                             self.selectionState.reset(from: newSelectionState)         // cache it here
                             MarkupEditor.selectionState.reset(from: newSelectionState) // and set globally
                         } else {
-                            print(" Could not reset selectionState")
+                            Logger.webview.error(" Could not reset selectionState")
                         }
                     }
                 }
@@ -201,7 +211,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     func resetSelection(handler: (()->Void)? = nil) {
         evaluateJavaScript("MU.resetSelection()") { result, error in
             if let error {
-                print("resetSelection error: \(error.localizedDescription)")
+                Logger.webview.error("resetSelection error: \(error.localizedDescription)")
             }
             handler?()
         }
@@ -211,7 +221,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     func focus(handler: (()->Void)? = nil) {
         evaluateJavaScript("MU.focus()") { result, error in
             if let error {
-                print("focus error: \(error)")
+                Logger.webview.error("focus error: \(error)")
                 self.hasFocus = false
             } else {
                 self.hasFocus = true
@@ -293,7 +303,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
             }
             
         } catch let error {
-            print("Failure copying resource files: \(error.localizedDescription)")
+            Logger.webview.error("Failure copying resource files: \(error.localizedDescription)")
         }
     }
     
@@ -328,7 +338,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     public func loadInitialHtml() {
         setPlaceholder {
             self.setHtml(self.html ?? "") {
-                //print("isReady: \(self.id)")
+                //Logger.webview.debug("isReady: \(self.id)")
                 self.isReady = true
                 if let delegate = self.markupDelegate {
                     delegate.markupDidLoad(self) {
@@ -347,12 +357,56 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     
     //MARK: Keyboard handling and accessoryView setup
 
-    @objc func keyboardWillShow() {
+    /// Respond to keyboardWillShow event.
+    ///
+    /// We adjust toolbar height constraint so it shows properly and scroll the selection so it is not obscured by
+    /// the keyboard.
+    ///
+    /// We want to restore any contentOffset we started with when the keyboard hides. However, we get multiple keyboardWillShow
+    /// events, and during ones after the first, the contentOffset may have been magically changed to something we don't want to
+    /// reset-to. For this reason, we only capture and restore the contentOffset that was present at the first keyboardWillShow event.
+    @objc private func keyboardWillShow(_ notification: NSNotification) {
         markupToolbarHeightConstraint.constant = MarkupEditor.toolbarStyle.height()
+        // Gate the oldContentOffset setting so it only happens once; reset to nil at keyboardDidHide time
+        if oldContentOffset == nil { oldContentOffset = scrollView.contentOffset }
+        if hasFocus, let oldContentOffset, let actualSourceRect = selectionState.sourceRect {
+            let sourceRect = CGRect(origin: actualSourceRect.origin, size: CGSize(width: actualSourceRect.width, height: actualSourceRect.height))
+            guard let userInfo = notification.userInfo else { return }
+            // In iOS 16.1 and later, the keyboard notification object is the screen the keyboard appears on.
+            guard let screen = notification.object as? UIScreen,
+                  // Get the keyboard’s frame at the end of its animation
+                  let keyboardFrameEnd = userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            // Use the screen to get the coordinate space to convert from
+            let fromCoordinateSpace = screen.coordinateSpace
+            // Get this view's coordinate space
+            let toCoordinateSpace: UICoordinateSpace = self
+            // Convert the extended keyboard frame from the screen's coordinate space to this view's coordinate space
+            let convertedKeyboardFrameEnd = fromCoordinateSpace.convert(keyboardFrameEnd, to: toCoordinateSpace)
+            // Get the intersection between the keyboard's frame and the view's bounds. Unlike, say a TextView
+            // where we would want to use that view's scrollview to push it up out of the keyboard's way, here
+            // we want to scroll the text inside of the MarkupWKWenbView up if the keyboard overlaps the selection
+            // which is held in sourceRect.
+            let viewIntersection = bounds.intersection(convertedKeyboardFrameEnd)
+            let sourceIntersection = sourceRect.intersection(convertedKeyboardFrameEnd)
+            // Check whether the keyboard intersects the selection before announcing the offset needed. We
+            // don't need to do anything if the keyboard isn't covering the sourceRect at all.
+            if !sourceIntersection.isEmpty {
+                let bottomOffset = sourceIntersection.maxY - viewIntersection.minY
+                if bottomOffset > 0 {
+                    scrollView.setContentOffset(CGPoint(x: oldContentOffset.x, y: oldContentOffset.y + bottomOffset), animated: true)
+                }
+            }
+        }
     }
     
+    /// Respond to the keyboardDidHide event.
+    ///
+    /// Adjust the height contstraint on the MarkupToolbar and reset the contentOffset.
+    /// Reset oldContentOffset so we can key off of it being nil the next time keyBoardWillShow happens.
     @objc private func keyboardDidHide() {
         markupToolbarHeightConstraint.constant = 0
+        scrollView.setContentOffset(oldContentOffset ?? CGPoint.zero, animated: true)
+        oldContentOffset = nil
     }
     
     //MARK: Overrides
@@ -381,13 +435,13 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
         switch event.type {
         case .hover, .motion, .presses, .remoteControl, .scroll, .touches, .transform:
             // Let the superclass handle all the publicly recognized event types
-            //if event.type != .hover { // Else mouse movement over the view produces a zillion hover prints
-            //    print("Letting WKWebView handle: \(event.description)")
+            //if event.type != .hover { // Else mouse movement over the view produces a zillion hover log messages
+            //    Logger.webview.debug("Letting WKWebView handle: \(event.description)")
             //}
             return super.hitTest(point, with: event)
         default:
             // We will handle the UIDragEvent ourselves
-            //print("MarkupWKWebView handling: \(event.description)")
+            //Logger.webview.debug("MarkupWKWebView handling: \(event.description)")
             return self
         }
     }
@@ -413,52 +467,28 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     /// Return false to disable various menu items depending on selectionState
     @objc override public func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         guard selectionState.valid else { return false }
-        // One day we will be able to do this at a case level https://forums.swift.org/t/switch-and-avaliable/39528
-        // Until then, don't forget to make changes in both switch statements!!!
-        if #available(iOS 15.0, macCatalyst 15.0, *) {
-            switch action {
-            case #selector(UIResponderStandardEditActions.selectAll(_:)):
-                return super.canPerformAction(action, withSender: sender)
-            case #selector(UIResponderStandardEditActions.copy(_:)), #selector(UIResponderStandardEditActions.cut(_:)):
-                return selectionState.canCopyCut
-            case #selector(UIResponderStandardEditActions.paste(_:)), #selector(UIResponderStandardEditActions.pasteAndMatchStyle(_:)):
-                return pasteableType() != nil
-            case #selector(indent), #selector(outdent):
-                return selectionState.canDent
-            case #selector(bullets), #selector(numbers):
-                return selectionState.canList
-            case #selector(pStyle), #selector(h1Style), #selector(h2Style), #selector(h3Style), #selector(h4Style), #selector(h5Style), #selector(h6Style), #selector(pStyle):
-                return selectionState.canStyle
-            case #selector(showPluggableLinkPopover), #selector(showPluggableImagePopover), #selector(showPluggableTablePopover):
-                return true     // Toggles off and on
-            case #selector(bold), #selector(italic), #selector(underline), #selector(code), #selector(strike), #selector(subscriptText), #selector(superscript):
-                return selectionState.canFormat
-            default:
-                //print("Unknown action: \(action)")
-                return false
-            }
-        } else {
-            switch action {
-            case #selector(UIResponderStandardEditActions.selectAll(_:)):
-                return super.canPerformAction(action, withSender: sender)
-            case #selector(UIResponderStandardEditActions.copy(_:)), #selector(UIResponderStandardEditActions.cut(_:)):
-                return selectionState.canCopyCut
-            case #selector(UIResponderStandardEditActions.paste(_:)):
-                return pasteableType() != nil
-            case #selector(indent), #selector(outdent):
-                return selectionState.canDent
-            case #selector(bullets), #selector(numbers):
-                return selectionState.canList
-            case #selector(pStyle), #selector(h1Style), #selector(h2Style), #selector(h3Style), #selector(h4Style), #selector(h5Style), #selector(h6Style), #selector(pStyle):
-                return selectionState.canStyle
-            case #selector(showPluggableLinkPopover), #selector(showPluggableImagePopover), #selector(showPluggableTablePopover):
-                return true     // Toggles off and on
-            case #selector(bold), #selector(italic), #selector(underline), #selector(code), #selector(strike), #selector(subscriptText), #selector(superscript):
-                return selectionState.canFormat
-            default:
-                //print("Unknown action: \(action)")
-                return false
-            }
+        switch action {
+        case #selector(getter: undoManager):
+            return true
+        case #selector(UIResponderStandardEditActions.select(_:)), #selector(UIResponderStandardEditActions.selectAll(_:)):
+            return super.canPerformAction(action, withSender: sender)
+        case #selector(UIResponderStandardEditActions.copy(_:)), #selector(UIResponderStandardEditActions.cut(_:)):
+            return selectionState.canCopyCut
+        case #selector(UIResponderStandardEditActions.paste(_:)), #selector(UIResponderStandardEditActions.pasteAndMatchStyle(_:)):
+            return pasteableType() != nil
+        case #selector(indent), #selector(outdent):
+            return selectionState.canDent
+        case #selector(bullets), #selector(numbers):
+            return selectionState.canList
+        case #selector(pStyle), #selector(h1Style), #selector(h2Style), #selector(h3Style), #selector(h4Style), #selector(h5Style), #selector(h6Style), #selector(pStyle):
+            return selectionState.canStyle
+        case #selector(showPluggableLinkPopover), #selector(showPluggableImagePopover), #selector(showPluggableTablePopover):
+            return true     // Toggles off and on
+        case #selector(bold), #selector(italic), #selector(underline), #selector(code), #selector(strike), #selector(subscriptText), #selector(superscript):
+            return selectionState.canFormat
+        default:
+            //Logger.webview.debug("Unknown action: \(action)")
+            return false
         }
     }
     
@@ -598,12 +628,17 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     
     /// Invoke the \_doBlockquoteEnter operation directly.
     public func testBlockquoteEnter(handler: (()->Void)? = nil) {
-        self.evaluateJavaScript("MU.testBlockquoteEnter()") { result, error in handler?() }
+        evaluateJavaScript("MU.testBlockquoteEnter()") { result, error in handler?() }
     }
     
     /// Invoke the \_doListEnter operation directly.
     public func testListEnter(handler: (()->Void)? = nil) {
-        self.evaluateJavaScript("MU.testListEnter()") { result, error in handler?() }
+        evaluateJavaScript("MU.testListEnter()") { result, error in handler?() }
+    }
+    
+    /// Ensure extractContents behaves as expected, since we depend on it.
+    public func testExtractContents(handler: (()->Void)? = nil) {
+        evaluateJavaScript("MU.testExtractContents()") { result, error in handler?() }
     }
     
     //MARK: Javascript interactions
@@ -624,7 +659,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
         }
     }
     
-    public func emptyDocument(handler: (()->Void)?) {
+    public func emptyDocument(handler: (()->Void)? = nil) {
         evaluateJavaScript("MU.emptyDocument()") { result, error in
             handler?()
         }
@@ -655,17 +690,24 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
         }
     }
     
-    public func updateHeight(handler: ((Int)->Void)?) {
-        getClientHeight() { clientHeight in
-            if self.editorHeight != clientHeight {
-                self.editorHeight = clientHeight
-                handler?(self.contentHeight(from: clientHeight))
+    /// Set the CSS padding-block bottom so that the padding fills the frame height.
+    public func padBottom(handler: (()->Void)? = nil) {
+        evaluateJavaScript("MU.padBottom('\(frame.height)')") { result, error in
+            if let error {
+                Logger.webview.error("Error: \(error)")
             }
+            handler?()
         }
     }
     
-    private func contentHeight(from clientHeight: Int) -> Int {
-        return clientHeight + 2 * bodyMargin
+    /// Update the internal height tracking.
+    public func updateHeight(handler: ((Int)->Void)?) {
+        self.getHeight() { clientHeight in
+            if self.editorHeight != clientHeight {
+                self.editorHeight = clientHeight
+                handler?(clientHeight + self.clientHeightPad)
+            }
+        }
     }
     
     public func cleanUpHtml(handler: ((Error?)->Void)?) {
@@ -707,7 +749,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
                 handler?(cachedImageUrl)
             }
         } catch let error {
-            print("Error inserting local image: \(error.localizedDescription)")
+            Logger.webview.error("Error inserting local image: \(error.localizedDescription)")
             handler?(cachedImageUrl)
         }
     }
@@ -763,62 +805,116 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
         pasteboard.setItems([items])
     }
     
-    private func getClientHeight(_ handler: @escaping ((Int)->Void)) {
-        evaluateJavaScript("document.getElementById('editor').clientHeight") { result, error in
+    private func getHeight(_ handler: @escaping ((Int)->Void)) {
+        evaluateJavaScript("MU.getHeight()") { result, error in
             handler(result as? Int ?? 0)
         }
     }
     
     /// Search for text in the direction specified.
     ///
-    /// *NOTE*: It's important to cancelSearch once a search is performed using this method. On the JavaScript
-    /// side, a search becomes "active", and subsequent input of Enter in the MKMarkupWebView search for
-    /// the next occurrence of text in the direction specified until cancelSearch is called.
-    public func search(for text: String, direction: FindDirection, handler: (()->Void)? = nil) {
-        becomeFirstResponder()
-        // Remove the "smartquote" stuff that happens when inputting search into a TextField.
-        // On the Swift side, replace the search string characters with the proper equivalents
-        // for the MarkupEditor. To pass mixed apostrophes and quotes in the JavaScript call,
-        // replace all apostrophe/quote-like things with "&quot;"/"&apos;", which we will
-        // replace with "\"" and "'" on the JavaScript side before doing a search.
-        let patchedText = text
-            .replacingOccurrences(of: "\u{0027}", with: "&apos;")   // '
-            .replacingOccurrences(of: "\u{2018}", with: "&apos;")   // ‘
-            .replacingOccurrences(of: "\u{2019}", with: "&apos;")   // ‘
-            .replacingOccurrences(of: "\u{0022}", with: "&quot;")   // "
-            .replacingOccurrences(of: "\u{201C}", with: "&quot;")   // “
-            .replacingOccurrences(of: "\u{201D}", with: "&quot;")   // ”
-        evaluateJavaScript("MU.searchFor(\"\(patchedText)\", \"\(direction)\")") { result, error in
-            if let error {
-                print("Error: \(error)")
+    /// *NOTE*: If you specify `activate: true`, then It is very important to `deactivateSearch` or `cancelSearch`
+    /// when you're done searching. When `activate: true` is specified, on the JavaScript side a search becomes "active",
+    /// and subsequent input of Enter in the MarkupWKWebView will search for the next occurrence of `text` in the `direction`
+    /// specified until `deactivateSearch` or `cancelSearch` is called.
+    public func search(for text: String, direction: FindDirection, activate: Bool = false, handler: (()->Void)? = nil) {
+        startModalInput() {
+            self.becomeFirstResponder()
+            // Remove the "smartquote" stuff that happens when inputting search into a TextField.
+            // On the Swift side, replace the search string characters with the proper equivalents
+            // for the MarkupEditor. To pass mixed apostrophes and quotes in the JavaScript call,
+            // replace all apostrophe/quote-like things with "&quot;"/"&apos;", which we will
+            // replace with "\"" and "'" on the JavaScript side before doing a search.
+            let patchedText = text
+                .replacingOccurrences(of: "\u{0027}", with: "&apos;")   // '
+                .replacingOccurrences(of: "\u{2018}", with: "&apos;")   // ‘
+                .replacingOccurrences(of: "\u{2019}", with: "&apos;")   // ‘
+                .replacingOccurrences(of: "\u{0022}", with: "&quot;")   // "
+                .replacingOccurrences(of: "\u{201C}", with: "&quot;")   // “
+                .replacingOccurrences(of: "\u{201D}", with: "&quot;")   // ”
+            self.evaluateJavaScript("MU.searchFor(\"\(patchedText)\", \"\(direction)\", \"\(activate)\")") { result, error in
+                if let error {
+                    Logger.webview.error("Error: \(error)")
+                }
+                handler?()
             }
-            handler?()
         }
     }
     
-    /// Cancel the search that is underway, so that Enter is no longer intercepted on the JavaScript side.
-    public func cancelSearch(handler: (()->Void)? = nil) {
-        evaluateJavaScript("MU.searchFor(\"\")") { result, error in
-            if let error {
-                print("Error: \(error)")
+    /// Stop intercepting Enter to invoke searchForNext().
+    public func deactivateSearch(handler: (()->Void)? = nil) {
+        endModalInput() {
+            self.evaluateJavaScript("MU.deactivateSearch()") { result, error in
+                if let error {
+                    Logger.webview.error("Error: \(error)")
+                }
+                handler?()
             }
+        }
+    }
+    
+    /// Cancel the search that is underway, so that Enter is no longer intercepted and indexes are cleared on the JavaScript side.
+    public func cancelSearch(handler: (()->Void)? = nil) {
+        endModalInput() {
+            self.evaluateJavaScript("MU.cancelSearch()") { result, error in
+                if let error {
+                    Logger.webview.error("Error: \(error)")
+                }
+                handler?()
+            }
+        }
+    }
+    
+    /// Scroll the view so that the selection is visible.
+    ///
+    /// We use the selrect found in selection state, pad it by 8 vertically, and scroll a minimum
+    /// amount to keep put that padded rectangle fully in the view. Scrolling never moves the
+    /// top below 0 or the bottom above the scrollView.contentHeight.
+    public func makeSelectionVisible(handler: (()->Void)? = nil) {
+        getSelectionState() { state in
+            guard let selrect = state.selrect else {
+                handler?()
+                return
+            }
+            // We pad selrect because we don't want to scroll so it is right at the top
+            // or bottom, but instead is a reasonable amount inset.
+            let padrect = selrect.insetBy(dx: 0, dy: -8)
+            // Find intersection of padrect and visible portion of document. The selrect is always
+            // relative to the frame, so we can use frame for the intersection.
+            let intersection = padrect.intersection(self.frame)
+            // If the intersection is the full padrect, then it is fully visible and we can return
+            // without scrolling.
+            if intersection == padrect {
+                handler?()
+                return
+            }
+            // Set the scroll targets so that padRect's bottom is fully within the frame, but scroll
+            // by as little as needed to bring it in frame.
+            let topTarget = padrect.origin.y + padrect.height + self.scrollView.contentOffset.y - self.frame.height
+            // Keep the target so that it doesn't scroll the content above the bottom.
+            let bottomTarget = self.scrollView.contentSize.height - self.frame.height
+            let target = min(bottomTarget, max(0, topTarget))
+            let scrollPoint = CGPoint(x: 0, y: target)
+            self.scrollView.setContentOffset(scrollPoint, animated: true)
             handler?()
         }
     }
     
     //MARK: Undo/redo
     
+    /// Invoke the undo function from the undo button, same as occurs with Command-S.
+    ///
+    /// Note that this operation interleaves the browser-native undo (e.g., undoing typing)
+    /// with the _undoOperation implemented in markup.js.
     public func undo(handler: (()->Void)? = nil) {
-        // Invoke the undo function from the undo button, same as occurs with Command-S.
-        // Note that this operation interleaves the browser-native undo (e.g., undoing typing)
-        // with the _undoOperation implemented in markup.js.
         evaluateJavaScript("MU.undo()") { result, error in handler?() }
     }
     
+    /// Invoke the undo function from the undo button, same as occurs with Command-Shift-S.
+    ///
+    /// Note that this operation interleaves the browser-native redo (e.g., redoing typing)
+    /// with the _redoOperation implemented in markup.js.
     public func redo(handler: (()->Void)? = nil) {
-        // Invoke the undo function from the undo button, same as occurs with Command-Shift-S.
-        // Note that this operation interleaves the browser-native redo (e.g., redoing typing)
-        // with the _redoOperation implemented in markup.js.
         evaluateJavaScript("MU.redo()") { result, error in handler?() }
     }
     
@@ -962,7 +1058,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
                 handler?()
             }
         } catch let error {
-            print("Error inserting local image: \(error.localizedDescription)")
+            Logger.webview.error("Error inserting local image: \(error.localizedDescription)")
             handler?()
         }
     }
@@ -970,7 +1066,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     public func pasteImageUrl(_ url: URL?, handler: (()->Void)? = nil) {
         guard let url = url, !pastedAsync else { return }
         //TODO: Make it work
-        print("Save the image url: \(url)")
+        Logger.webview.error("Save the image url: \(url)")
         pastedAsync = false
     }
     
@@ -1069,7 +1165,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
                 let stateDictionary = try JSONSerialization.jsonObject(with: data, options: []) as? [String : Any]
                 newSelectionState = self.selectionState(from: stateDictionary)
             } catch let error {
-                print("Error decoding selectionState data: \(error.localizedDescription)")
+                Logger.webview.error("Error decoding selectionState data: \(error.localizedDescription)")
                 newSelectionState = SelectionState()
             }
             self.selectionState.reset(from: newSelectionState)
@@ -1080,7 +1176,7 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
     private func selectionState(from stateDictionary: [String : Any]?) -> SelectionState {
         let selectionState = SelectionState()
         guard let stateDictionary = stateDictionary else {
-            print("State decoded from JSON was nil")
+            Logger.webview.error("State decoded from JSON was nil")
             return selectionState
         }
         // Validity (i.e., document.getSelection().rangeCount > 0

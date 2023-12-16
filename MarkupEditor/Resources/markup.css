@@ -2,7 +2,6 @@ body {
     font-family: -apple-system;
     font: -apple-system-body;
     caret-color: red;   /* Helps with debugging since should not appear */
-    font-size: 1.0em;
 }
 
 #editor {
@@ -12,7 +11,10 @@ body {
      * selecting resizable images that are at the edge of the screen.
      */
     overflow: visible;
-    margin: 0 2px 0 2px;
+    margin: 2px;
+    /* MU.padBottom() sets this value in px based on fullHeight */
+    --padBottom: 0;
+    padding-block: 0 var(--padBottom);
 }
 
 #editor:focus {
@@ -30,6 +32,10 @@ a {
 
 a:hover {
     text-decoration: underline;
+}
+
+p {
+    font-size: 1.0em;
 }
 
 p, ul, ol, dl, table, pre {
@@ -151,6 +157,11 @@ p code, h1 code, h2 code, h3 code, h4 code, h5 code, h6 code {
     position: relative;
     display: inline-block;
     margin: 0 auto;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
 }
 
 .resize-container img {

@@ -16,6 +16,12 @@ import MarkupEditor
 /// 
 /// Acts as the MarkupDelegate to interact with editing operations as needed, and as the FileToolbarDelegate to interact
 /// with the FileToolbar.
+///
+/// A local png image is packaged along with the rest of the demo app resources for demo purposes only.
+/// Normally, you would want to put resources in a subdirectory of where your html file comes from, or in
+/// a directory that holds both the html file and all of its resources. When you do that, you would specify
+/// `resourcesUrl` when  instantiating MarkupEditorView, so that the \<img src=...> tag can identify
+/// the `src` for the image relative to your html document.
 struct DemoContentView: View {
 
     @ObservedObject var selectImage = MarkupEditor.selectImage
@@ -24,20 +30,9 @@ struct DemoContentView: View {
     @State private var rawShowing: Bool = false
     @State private var demoHtml: String
     
-    // Note that we specify resourcesUrl when instantiating MarkupEditorView so that we can demonstrate
-    // loading of local resources in the edited document. That resource, a png, is packaged along
-    // with the rest of the demo app resources, so we get more than we wanted from resourcesUrl,
-    // but that's okay for demo. Normally, you would want to put resources in a subdirectory of
-    // where your html file comes from, or in a directory that holds both the html file and all
-    // of its resources.
-    private let resourcesUrl: URL? = URL(string: Bundle.main.resourceURL!.path)
-    
     var body: some View {
-        //if #available(iOS 15.0, macCatalyst 15.0, *) {
-        //    let _ = Self._printChanges()
-        //}
         VStack(spacing: 0) {
-            MarkupEditorView(markupDelegate: self, html: $demoHtml, resourcesUrl: resourcesUrl, id: "Document")
+            MarkupEditorView(markupDelegate: self, html: $demoHtml, id: "Document")
             if rawShowing {
                 VStack {
                     Divider()
@@ -113,14 +108,7 @@ extension DemoContentView: MarkupDelegate {
     func markupImageAdded(url: URL) {
         print("Image added from \(url.path)")
     }
-    
-    /// Override the default behavior for when the MarkupEditor encounters an error.
-    ///
-    /// In the event of a MUError.Alert, play an alert sound.
-    func markupError(code: String, message: String, info: String?, alert: Bool) {
-        print("Error \(code): \(message)")
-        if let info = info { print(" \(info)") }
-    }
+
 
 }
 

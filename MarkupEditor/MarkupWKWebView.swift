@@ -524,6 +524,9 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
         MarkupEditor.showInsertPopover.type = .link     // Does nothing by default
         startModalInput()                               // Required to deal with focus properly for popovers
         let linkVC = LinkViewController()
+        if let color = ToolbarStyle.accentColor.cgColor {
+            linkVC.view.tintColor = UIColor(cgColor: color)
+        }
         linkVC.modalPresentationStyle = .popover
         linkVC.preferredContentSize = CGSize(width: 300, height: 100 + 2.0 * MarkupEditor.toolbarStyle.buttonHeight())
         guard let popover = linkVC.popoverPresentationController else { return }
@@ -540,6 +543,9 @@ public class MarkupWKWebView: WKWebView, ObservableObject {
         MarkupEditor.showInsertPopover.type = .image    // Does nothing by default
         startModalInput()                               // Required to deal with focus properly for popovers
         let imageVC = ImageViewController()
+        if let color = ToolbarStyle.accentColor.cgColor {
+            imageVC.view.tintColor = UIColor(cgColor: color)
+        }
         imageVC.modalPresentationStyle = .popover
         imageVC.preferredContentSize = CGSize(width: 300, height: 140 + 2.0 * MarkupEditor.toolbarStyle.buttonHeight())
         guard let popover = imageVC.popoverPresentationController else { return }

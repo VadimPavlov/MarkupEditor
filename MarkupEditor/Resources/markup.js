@@ -58,6 +58,77 @@ const _callback = function(message) {
 };
 
 /**
+ * Called to set attributes to the editor div, typically to make it contenteditable,
+ * but also to set spellcheck and autocorrect.
+ */
+MU.setTopLevelAttributes = function(jsonString) {
+    const attributes = JSON.parse(jsonString);
+    if (attributes) {
+        _setAttributes(MU.editor, attributes);
+    };
+};
+
+/**
+ * Set attributes of an HTML element.
+ */
+const _setAttributes = function(element, attributes) {
+    for (const [key, value] of Object.entries(attributes)) {
+        element.setAttribute(key, value);
+    };
+};
+
+/**
+ * Called to load user script and CSS before loading html.
+ *
+ * The scriptFile and cssFile are loaded in sequence, with the single 'loadedUserFiles'
+ * callback only happening after their load events trigger. If neither scriptFile
+ * nor cssFile are specified, then the 'loadedUserFiles' callback happens anyway,
+ * since this ends up driving the loading process further.
+ */
+MU.loadUserFiles = function(scriptFile, cssFile) {
+    if (scriptFile) {
+        if (cssFile) {
+            _loadUserScriptFile(scriptFile, function() { _loadUserCSSFile(cssFile) });
+        } else {
+            _loadUserScriptFile(scriptFile, function() { _loadedUserFiles() });
+        }
+    } else if (cssFile) {
+        _loadUserCSSFile(cssFile);
+    } else {
+        _loadedUserFiles();
+    }
+};
+
+const _loadedUserFiles = function() {
+    _callback('loadedUserFiles');
+}
+
+/**
+ * Called to load user script before loading html.
+ */
+const _loadUserScriptFile = function(file, callback) {
+    let body = document.getElementsByTagName('body')[0];
+    let script = document.createElement('script');
+    script.type = 'text/javascript';
+    script.addEventListener('load', callback);
+    script.setAttribute('src', file);
+    body.appendChild(script);
+};
+
+/**
+ * Called to load user CSS before loading html if userCSSFile has been defined for this MarkupWKWebView
+ */
+const _loadUserCSSFile = function(file) {
+    let head = document.getElementsByTagName('head')[0];
+    let link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.type = 'text/css';
+    link.addEventListener('load', function() { _loadedUserFiles() });
+    link.href = file;
+    head.appendChild(link);
+};
+
+/**
  * The 'ready' callback lets Swift know the editor and this js is properly loaded.
  *
  * Note for history, replaced window.onload with this eventListener.
@@ -2118,9 +2189,12 @@ const _minimalLink = function(div) {
     while (element) {
         if (element.getAttribute('href')) {
             element.replaceWith(document.createTextNode(element.text));
-            elements = div.getElementsByTagName('A');
-            element = (elements.length > 0) ? elements[0] : null;
+        } else {
+            // This link has no href and is therefore not allowed
+            element.parentNode.removeChild(element);
         };
+        elements = div.getElementsByTagName('A');
+        element = (elements.length > 0) ? elements[0] : null;
     };
 };
 
@@ -2167,11 +2241,18 @@ const _pasteHTML = function(html, oldUndoerData, undoable=true) {
     //_callback('input');
     //return true;
     const newElement = _fragmentFrom(html)
-    const anchorIsElement = anchorNode.nodeType === Node.ELEMENT_NODE;
-    const firstChildIsElement = newElement.firstChild && (newElement.firstChild.nodeType === Node.ELEMENT_NODE);
+    const anchorIsElement = _isElementNode(anchorNode);
+    const firstChildIsElement = newElement.firstChild && (_isElementNode(newElement.firstChild));
+    const firstChildIsFormat = newElement.firstChild && (_isFormatElement(newElement.firstChild));
     const anchorIsEmpty = _isEmpty(anchorNode);
     let pasteRange = selRange.cloneRange();
     let newSelRange, rootName, replacedEmpty;
+    // If the anchorNode is text, and the fragment's first child is not a format node, then we will
+    // replace the fragment's first child with its contents.
+    if (_isTextNode(anchorNode) && !firstChildIsFormat) {
+        const newFirstChild = _fragmentFrom(newElement.firstChild.innerHTML);
+        newElement.firstChild.replaceWith(newFirstChild);
+    };
     if (anchorIsElement && firstChildIsElement && anchorIsEmpty) {
         // We are in an empty paragraph, typically, like <p><br></p>. Replace it with the newElement
         // manually by replacing the anchor with the firstChild, followed by all of its siblings.
@@ -2182,12 +2263,13 @@ const _pasteHTML = function(html, oldUndoerData, undoable=true) {
         let lastChild = newElement.firstChild;
         let nextSib = lastChild.nextSibling;
         const beforeTarget = anchorNode.nextElementSibling;
+        const insertTarget = beforeTarget?.parentNode ?? anchorNode.parentNode ?? MU.editor;
         anchorNode.replaceWith(lastChild);
         // Now we need put the rest of the newElement fragment in as siblings,
         // tracking lastChild as we go thru them.
         while (nextSib) {
             lastChild = nextSib;
-            beforeTarget.parentNode.insertBefore(nextSib, beforeTarget);
+            insertTarget.insertBefore(nextSib, beforeTarget);
             nextSib = newElement.firstChild;
         };
         newSelRange = document.createRange();
@@ -2242,25 +2324,41 @@ const _pasteHTML = function(html, oldUndoerData, undoable=true) {
  * is "clean" by MarkupEditor standards.
  */
 const _patchPasteHTML = function(html) {
+    
+    // We need a document fragment from the html so we can use its dom for cleaning up.
     const element = _fragmentFrom(html);
-    _cleanUpSpansWithin(element);
-    _cleanUpDivsWithin(element);
-    _cleanUpAttributesWithin('style', element);
-    _cleanUpAttributesWithin('class', element);
-    _cleanUpMetas(element);
-    _cleanUpBRs(element);
-    _cleanUpNewlines(element);
-    _cleanUpPREs(element);
-    _cleanUpAliases(element);
-    _prepImages(element);
-    return element;
+    
+    // Sometimes (e.g., iOS Note) the fragment is an entire HTML document.
+    // In this case, we only want the body, but let's clean up these items
+    // that should be outside of it just in case something wacky is going on.
+    _cleanUpTypesWithin(['head', 'meta', 'title', 'style'], element);
+    const body = element.body ?? element;
+    
+    // Now do the extensive clean up required for the body
+    _cleanUpSpansWithin(body);
+    _cleanUpDivsWithin(body);
+    _cleanUpTypesWithin(['label', 'button'], body)
+    _cleanUpAttributesWithin('style', body);
+    _cleanUpAttributesWithin('class', body);
+    _cleanUpEmptyTextNodes(body);
+    _cleanUpPREs(body);
+    _cleanUpOrphanNodes(body);
+    _cleanUpBRs(body);
+    _cleanUpNewlines(body);
+    _cleanUpTabs(body);
+    _cleanUpAliases(body);
+    _prepImages(body);
+    return body;
 };
 
+/**
+ * Return a document fragment element derived from the html.
+ */
 const _fragmentFrom = function(html) {
     const template = document.createElement('template');
     template.innerHTML = html;
     return template.content;
-}
+};
 
 /**
  * Insert the fragment at the current selection point.
@@ -2549,16 +2647,25 @@ const _undoPasteHTML = function(undoerData) {
     const deletedFragment = undoerData.data.deletedFragment;
     _deleteRange(pasteRange, rootName);
     const sel = document.getSelection();
-    let newRange = sel.getRangeAt(0);
+    let newRange = _minimizedRangeFrom(sel.getRangeAt(0));
     if (replacedEmpty) {
         const newEmptyElement = document.createElement(replacedEmpty);
         const br = document.createElement('br');
         newEmptyElement.appendChild(br);
-        const topLevelNode = _findFirstParentElementInNodeNames(newRange.startContainer, _topLevelTags);
-        if (topLevelNode) {
-            topLevelNode.parentNode.insertBefore(newEmptyElement, topLevelNode.nextSibling);
+        const startContainer = newRange.startContainer;
+        const startNode = (_isTextNode(startContainer)) ? startContainer : startContainer.children[newRange.startOffset];
+        if (!startNode) {
+            startContainer.appendChild(newEmptyElement)
             newRange.setStart(newEmptyElement, 0);
             newRange.setEnd(newEmptyElement, 0);
+        } else {
+            const beforeTarget = (_isTextNode(startContainer)) ? startContainer.nextSibling : startNode;
+            const topLevelNode = _findFirstParentElementInNodeNames(startNode, _topLevelTags);
+            if (topLevelNode) {
+                topLevelNode.parentNode.insertBefore(newEmptyElement, beforeTarget);
+                newRange.setStart(newEmptyElement, 0);
+                newRange.setEnd(newEmptyElement, 0);
+            };
         };
     };
     // At this point, what was pasted-in is gone, and the document looks like if it had
@@ -2638,63 +2745,102 @@ const _deleteRange = function(range, rootName) {
     range.deleteContents();
     let leadingWasDeleted = false;
     let trailingWasDeleted = false;
+    let leadingDeletedIndex, trailingDeletedIndex;
     let startContainer = leadingNode;
     let endContainer = trailingNode;
-    if (_isEmpty(leadingNode)) {
+    // When we do deleteContents, the range contains empty text nodes so that
+    // it still remains valid. If the deletion wiped out the selection, then
+    // we need to put it back in place in the nearest non-empty text node.
+    // Note that a deleted style node will be replaced later based on replacedEmpty
+    // being present in undoerData.
+    if (_isEmpty(leadingNode) && (leadingNode !== MU.editor)) {    // It was deleted
         startContainer = _firstNonEmptyNextSibling(leadingNode);
         if (startContainer) {
             startOffset = 0;
         } else {
-            startContainer = leadingNode.parentNode;
-            startOffset = startContainer.childNodes.length - 1;  // We are deleting one next
+            startContainer = _firstNonEmptyPreviousSibling(leadingNode);
+            if (startContainer) {
+                if (_isTextNode(startContainer)) {
+                    startOffset = startContainer.length;
+                } else {
+                    startOffset = _childNodeIndex(startContainer);
+                };
+            } else {
+                startContainer = leadingNode.parentNode;
+                const leadingNodeIndex = _childNodeIndex(leadingNode);
+                // We are going to delete the leadingNode and set the startOffset
+                // to the node following if possible; else the one before.
+                if (leadingNode.nextSibling) {
+                    startOffset = leadingNodeIndex; // This will be the nextSibling after deleting leadingNode
+                } else {
+                    startOffset = Math.max(0, leadingNodeIndex - 1);
+                };
+            };
         }
-        leadingNode.parentNode.removeChild(leadingNode);
         leadingWasDeleted = true;
     };
-    if (_isEmpty(trailingNode)) {
-        if (leadingNode === trailingNode) {
-            endContainer = startContainer;
-            endOffset = startOffset;
-            trailingWasDeleted = leadingWasDeleted;
+    if (_isEmpty(trailingNode) && (leadingNode !== trailingNode) && (trailingNode !== MU.editor)) {
+        endContainer = _firstNonEmptyNextSibling(trailingNode);
+        if (endContainer) {
+            endOffset = 0;
         } else {
-            if (_isEmpty(trailingNode.parentNode)) {
-                trailingNode = trailingNode.parentNode;
-            };
             endContainer = _firstNonEmptyPreviousSibling(trailingNode);
             if (endContainer) {
                 if (_isTextNode(endContainer)) {
-                    endOffset = endContainer.textContent.length;
+                    endOffset = endContainer.length;
                 } else {
-                    let lastChild = endContainer.lastChild;
-                    if (_isTextNode(lastChild)) {
-                        endContainer = lastChild;
-                        endOffset = lastChild.textContent.length;
-                    } else {
-                        endOffset = endContainer.childNodes.length;
-                    };
+                    endOffset = _childNodeIndex(endContainer);
                 };
             } else {
                 endContainer = trailingNode.parentNode;
-                if (_isEmpty(endContainer)) {
-                    endContainer = _firstNonEmptyPreviousSibling(endContainer);
-                }
-                if (_isTextNode(endContainer)) {
-                    endOffset = endContainer.textContent.length;
+                const trailingNodeIndex = _childNodeIndex(trailingNode);
+                // We are going to delete the trailingNode and set the endOffset
+                // to the node following if possible; else the one before.
+                if (trailingNode.nextSibling) {
+                    endOffset = trailingNodeIndex; // This will be the nextSibling after deleting trailingNode
                 } else {
-                    endOffset = endContainer.childNodes.length - 1; // We are deleting one next
-                }
+                    endOffset = Math.max(0, trailingNodeIndex - 1);
+                };
             };
-            trailingNode.parentNode.removeChild(trailingNode);
-            trailingWasDeleted = true;
-            if (trailingNode.parentNode === leadingNode.parentNode) {
-                startOffset = Math.max(0, startOffset - 1);
-            }
-        }
+        };
+        trailingWasDeleted = true;
     } else {
         endOffset = 0;  // Because we deleted up to the original endOffset
-    }
-    if (leadingNode === trailingNode) {
+    };
+    if (leadingNode && trailingNode && (leadingNode === trailingNode)) {
+        endContainer = startContainer;
         endOffset = startOffset;
+    };
+    // We have as many empty text nodes as once existed in the range we deleted, and the
+    // trailingNode may not be the same or even the nextSibling of leadingNode.
+    // For example, in a range across the leading and trailing text nodes of 
+    // <p>Hello <b>bold</b> world</p>, we end up with three empty text nodes.
+    const sharedParent = leadingNode && trailingNode && (leadingNode.parentNode === trailingNode.parentNode);
+    if (leadingWasDeleted && trailingWasDeleted) {
+        if (leadingNode === trailingNode) {
+            leadingNode.parentNode.removeChild(leadingNode);
+        } else {
+            if (sharedParent) {
+                let parent = leadingNode.parentNode;
+                let child = leadingNode;
+                while (child) {
+                    let nextChild = child.nextSibling;
+                    child.parentNode.removeChild(child);
+                    if (nextChild && (nextChild !== trailingNode)) {
+                        child = nextChild
+                    } else {
+                        child = null;
+                    };
+                }
+            } else {
+                leadingNode.parentNode.removeChild(leadingNode);
+                trailingNode.parentNode.removeChild(trailingNode);
+            };
+        };
+    } else if (leadingWasDeleted) {
+        leadingNode.parentNode.removeChild(leadingNode);
+    } else if (trailingWasDeleted) {
+        trailingNode.parentNode.removeChild(trailingNode);
     };
     if (rootName && (leadingNode !== trailingNode) && !leadingWasDeleted && !trailingWasDeleted) {
         _joinTextNodes(leadingNode, trailingNode, rootName);
@@ -2808,6 +2954,7 @@ MU.setHTML = function(contents, select=true) {
  * auto-sizing of a WKWebView based on its contents.
  */
 MU.getHeight = function() {
+    const editor = MU.editor;
     const paddingBlockStart = editor.style.getPropertyValue('padding-block-start');
     const paddingBlockEnd = editor.style.getPropertyValue('padding-block-end');
     editor.style['padding-block-start'] = '0px';
@@ -2828,6 +2975,7 @@ MU.getHeight = function() {
  * of the screen. 
  */
 MU.padBottom = function(fullHeight) {
+    const editor = MU.editor;
     const padHeight = fullHeight - MU.getHeight();
     if (padHeight > 0) {
         editor.style.setProperty('--padBottom', padHeight+'px');
@@ -2865,9 +3013,11 @@ MU.resetSelection = function() {
  *
  * @return {string} The HTML for the editor element
  */
-MU.getHTML = function(pretty=true, clean=true) {
+MU.getHTML = function(pretty="true", clean="true") {
+    const prettyHTML = pretty === "true";
+    const cleanHTML = clean === "true";
     let editor, text;
-    if (clean) {
+    if (cleanHTML) {
         const template = document.createElement('template');
         template.innerHTML = MU.editor.innerHTML;
         editor = template.content;
@@ -2877,7 +3027,7 @@ MU.getHTML = function(pretty=true, clean=true) {
     } else {
         editor = MU.editor;
     };
-    if (pretty) {
+    if (prettyHTML) {
         text = _allPrettyHTML(editor);
     } else {
         text = MU.editor.innerHTML;
@@ -2895,7 +3045,6 @@ MU.getHTML = function(pretty=true, clean=true) {
  */
 const _allPrettyHTML = function(editor) {
     let text = '';
-    let firstTopLevelNode = true;
     const childNodes = editor.childNodes;
     const childNodesLength = childNodes.length;
     for (let i = 0; i < childNodesLength; i++) {
@@ -4641,6 +4790,7 @@ const _minimizedRangeFrom = function(selRange) {
     const focus = selRange.endContainer;
     const focusOffset = selRange.endOffset;
     const endsAtLength = selRange.collapsed && _isElementNode(focus) && (focusOffset === focus.childNodes.length);
+    const beginsAtZero = selRange.collapsed && _isElementNode(anchor) && (anchorOffset === 0);
     if (anchor === focus) {
         if (endsAtLength) {
             const lastChild = focus.lastChild;
@@ -4653,6 +4803,13 @@ const _minimizedRangeFrom = function(selRange) {
                 range.setStart(lastChild, lastChild.childNodes.length);
                 range.setEnd(lastChild, lastChild.childNodes.length);
             }
+            return range;
+        } else if (beginsAtZero) {
+            const firstChild = anchor.firstChild;
+            if (!firstChild) { return selRange };
+            const range = document.createRange();
+            range.setStart(firstChild, 0);
+            range.setEnd(firstChild, 0);
             return range;
         } else {
             return selRange;
@@ -6563,6 +6720,19 @@ MU.cleanUpHTML = function() {
     _cleanUpAttributes('style');
 };
 
+const _cleanUpTypesWithin = function(names, node) {
+    const ucNames = names.map((name) => name.toUpperCase());
+    const childNodes = node.childNodes;
+    for (let i=0; i < childNodes.length; i++) {
+        const child = childNodes[i];
+        if (ucNames.includes(child.nodeName)) {
+            node.removeChild(child);
+        } else if (child.childNodes.length > 0) {
+            _cleanUpTypesWithin(names, child);
+        };
+    };
+};
+
 /**
  * Remove meta tags contained in node, typically a document fragment.
  */
@@ -6609,29 +6779,51 @@ const _cleanUpNewlines = function(node) {
     let child = node.firstChild;
     while (child) {
         if (_isTextNode(child)) {
-            child = _patchNewlines(child).nextSibling;
+            _patchNewlines(child);
         } else {
-            child = child.nextSibling;
+            _cleanUpNewlines(child);
         };
+        child = child.nextSibling;
+    };
+};
+
+/**
+ * Patch up text nodes that have tabs
+ */
+const _cleanUpTabs = function(node) {
+    let child = node.firstChild;
+    while (child) {
+        let nextChild = child.nextSibling;
+        if (_isElementNode(child)) {
+            _cleanUpTabs(child);
+        } else if (_isTextNode(child)) {
+            const rawContent = child.textContent;
+            if (rawContent.includes('\t')) {
+                child.textContent = rawContent.replaceAll('\t', '\xA0\xA0\xA0\xA0'); // Four spaces for tabs, don't @ me
+            };
+        };
+        child = nextChild;
     };
 };
 
 /*
- * Replace PREs with Ps. They should only occur at the top level.
+ * Replace PREs with Ps if they contain a text node; else,
+ * leave their contents in place without the PRE.
  */
 const _cleanUpPREs = function(node) {
-    let childNodes = node.childNodes;
+    const childNodes = node.childNodes;
     for (let i=0; i < childNodes.length; i++) {
-        const child = childNodes[i];
-        const childName = child.nodeName;
-        if (childName === 'PRE') {
+        let child = childNodes[i];
+        if (_isPreElement(child)) {
             const p = document.createElement('p');
             const template = document.createElement('template');
             template.innerHTML = child.innerHTML;
             const newElement = template.content;
             p.appendChild(newElement);
             child.replaceWith(p);
-        };
+        } else if (_isElementNode(child)) {
+            _cleanUpPREs(child);
+        }
     };
 };
 
@@ -6772,6 +6964,9 @@ const _cleanUpAttributesWithin = function(attribute, node) {
     return attributesRemoved;
 };
 
+/*
+ * Do a depth-first traversal from node, removing all empty text nodes at the leaf nodes.
+ */
 const _cleanUpEmptyTextNodes = function(node) {
     let child = node.firstChild;
     while (child) {
@@ -6782,6 +6977,33 @@ const _cleanUpEmptyTextNodes = function(node) {
             child.parentNode.removeChild(child);
         };
         child = nextChild;
+    };
+};
+
+/*
+ * Traverse all immediate childnodes of node. If they are not part of _topLevelNodes,
+ * then put the childNode in a <p> element and call it a day. During paste, we sometimes
+ * receive <a> and text nodes that are not properly styled (by the MarkupEditor definition),
+ * so we will put them in a "normal" paragraph so we don't lose them.
+ */
+const _cleanUpOrphanNodes = function(node) {
+    const children = node.childNodes;
+    let child = children.isEmpty ? null : children[0];
+    while (child) {
+        let nextSib = child.nextSibling;
+        if (!_topLevelTags.includes(child.nodeName)) {
+            // Create a new <p> and put this non-top-level node in it
+            const newChild = document.createElement('p');
+            node.insertBefore(newChild, nextSib);
+            newChild.appendChild(child);
+            // Keep putting children in the same p until we hit a top-level tag
+            while (nextSib && !_topLevelTags.includes(nextSib.nodeName)) {
+                let nextNextSib = nextSib.nextSibling;
+                newChild.appendChild(nextSib);
+                nextSib = nextNextSib;
+            };
+        }
+        child = nextSib;
     };
 };
 
@@ -6814,10 +7036,14 @@ const _patchNewlines = function(node) {
         line = lines[i];
         nextLine = (i < lines.length - 1) ? lines[i + 1]  : null;
         if (((i === 0) || (i === lines.length - 1)) && (line.length === 0)) {
-            p = document.createElement('p');
-            textNode = document.createElement('br');
-            p.appendChild(textNode);
-            node.parentNode.insertBefore(p, insertTarget);
+            // If we have a newline at beginning or end but are in a formatTag, then
+            // do nothing; otherwise, insert an editable <p><br></p> line.
+            if (!_formatTags.includes(node.parentNode.nodeName)) {
+                p = document.createElement('p');
+                textNode = document.createElement('br');
+                p.appendChild(textNode);
+                node.parentNode.insertBefore(p, insertTarget);
+            };
         } else {
             textNode = document.createTextNode(_patchWhiteSpace(line, 'LEADING'));
             node.parentNode.insertBefore(textNode, insertTarget);
@@ -6830,13 +7056,6 @@ const _patchNewlines = function(node) {
     return textNode;
 };
 
-const _patchAngleBrackets = function(node) {
-    if (node.nodeType !== Node.TEXT_NODE) {
-        return node;
-    };
-    node.textContent = _replaceAngles(node.textContent);
-};
-                                
 /********************************************************************************
  * Explicit handling of multi-click
  * TODO: Remove?
@@ -6962,7 +7181,7 @@ const _monitorEnterTags = _listTags.concat(['TABLE', 'BLOCKQUOTE']);            
 const _monitorIndentTags = _listTags.concat(['BLOCKQUOTE']);                            // Tags we monitor for Tab or Ctrl+]
 
 //TODO: Include BLOCKQUOTE?
-const _topLevelTags = _paragraphStyleTags.concat(_listTags.concat(['TABLE']));          // Allowed top-level tags within editor
+const _topLevelTags = _paragraphStyleTags.concat(_listTags.concat(['TABLE', 'BLOCKQUOTE']));          // Allowed top-level tags within editor
 
 const _voidTags = ['BR', 'IMG', 'AREA', 'COL', 'EMBED', 'HR', 'INPUT', 'LINK', 'META', 'PARAM'] // Tags that are self-closing
 
@@ -7575,9 +7794,24 @@ MU.cutImage = function() {
     _showCaret();
 };
 
+/**
+ * Set up load events 1) to call back to tell the Swift side the image
+ * loaded, and to select the image once it's loaded. Do the same on error
+ * to handle the case of "broken images". Then set src.
+ */
 const _setSrc = function(img, src) {
-    img.addEventListener('load', function() {_makeSelected(img)});
-    img.addEventListener('error', function() {_makeSelected(img)});
+    img.addEventListener('load', function() {
+        _callback(JSON.stringify({'messageType' : 'addedImage', 'src' : src }));
+    });
+    img.addEventListener('load', function() {
+        _makeSelected(img);
+    });
+    img.addEventListener('error', function() {
+       _callback(JSON.stringify({'messageType' : 'addedImage', 'src' : src }));
+    });
+    img.addEventListener('load', function() {
+        _makeSelected(img);
+    });
     img.setAttribute('src', src);
 };
 
@@ -7808,8 +8042,27 @@ const _getImageAttributes = function(image=null) {
     return attributes;
 };
 
+/**
+ * Reset the resizableImage based on the undoerRange and delete it.
+ */
 const _undoInsertImage = function(undoerData) {
     _restoreUndoerRange(undoerData);
+    const sel = document.getSelection();
+    const selRange = sel?.getRangeAt(0);
+    if (!selRange) { return };
+    const startContainer = selRange.startContainer;
+    let img;
+    if (_isImageElement(startContainer)) {
+        img = startContainer;
+    } else if (_isElementNode(startContainer)) {
+        const child = startContainer.childNodes[selRange.startOffset];
+        if (_isImageElement(child)) {
+            img = child;
+        };
+    };
+    if (img) {
+        resizableImage.select(img);
+    };
     if (resizableImage.isSelected) {
         resizableImage.deleteImage()
         undoerData.range = document.getSelection().getRangeAt(0);
@@ -9613,6 +9866,10 @@ const _isElementNode = function(node) {
     return node && (node.nodeType === Node.ELEMENT_NODE);
 };
 
+const _isPreElement = function(node) {
+    return node && (node.nodeName === 'PRE');
+}
+
 /**
  * Return whether node is a style element; i.e., its nodeName is in _styleTags
  */
@@ -10378,7 +10635,9 @@ const _setTagInRange = function(type, range) {
         // endContainer empty. If so, we need to remove them to avoid messing up
         // future navigation by indices from parents in undo.
         let startContainer = range.startContainer;
+        _cleanUpEmptyTextNodes(startContainer);
         let endContainer = range.endContainer;
+        _cleanUpEmptyTextNodes(endContainer);
         while (_isEmpty(startContainer)) {
             startContainer.parentNode.removeChild(startContainer);
             startContainer = range.startContainer;

@@ -68,9 +68,19 @@ public class MarkupCoordinator: NSObject, WKScriptMessageHandler {
             return
         }
         switch messageBody {
-        case "ready":
-            //Logger.coordinator.debug("ready")
-            loadInitialHtml()
+        case "ready":            
+            // When the root files are properly loaded, we can load user-supplied css and js.
+            // Afterward, the "loadedUserFiles" callback will be invoked. Without the separate
+            // callback to "loadedUserFiles", we can end up with the functions defined by user
+            // scripts to not be defined when invoked from the MarkupDelegate.markupLoaded method.
+            webView.loadUserFiles()
+        case "loadedUserFiles":
+            //Logger.coordinator.debug("loadedUserFiles")
+            // After the user css and js are loaded, we set the top-level "editor" attributes,
+            // and load the initial HTML, which will result in the MarkupDelegate.markupLoaded call.
+            webView.setTopLevelAttributes() {
+                webView.loadInitialHtml()
+            }
         case "input":
             markupDelegate?.markupInput(webView)
             updateHeight()
@@ -179,6 +189,12 @@ public class MarkupCoordinator: NSObject, WKScriptMessageHandler {
             let width = dimensions["width"]
             let height = dimensions["height"]
             webView.copyImage(src: src, alt: alt, width: width, height: height)
+        case "addedImage":
+            guard let src = messageData["src"] as? String, let url = URL(string: src) else {
+                Logger.coordinator.error("Src was missing or malformed")
+                return
+            }
+            markupDelegate?.markupImageAdded(url: url)
         case "deletedImage":
             guard let src = messageData["src"] as? String, let url = URL(string: src) else {
                 Logger.coordinator.error("Src was missing or malformed")

@@ -24,13 +24,15 @@ public struct TableToolbar: View {
             VStack(spacing: 2) {
                 HStack {
                     LabeledToolbar(label: addHoverLabel) {
-                        ToolbarImageButton(
-                            action: { observedWebView.selectedWebView?.addHeader() },
-                            onHover: { over in addHoverLabel = Text(over ? "Add Header" : "Add") }
-                        ) {
-                            AddHeader()
+                        if contents.header {
+                            ToolbarImageButton(
+                                action: { observedWebView.selectedWebView?.addHeader() },
+                                onHover: { over in addHoverLabel = Text(over ? "Add Header" : "Add") }
+                            ) {
+                                AddHeader()
+                            }
+                            .disabled(!selectionState.isInTable || selectionState.header)
                         }
-                        .disabled(!selectionState.isInTable || selectionState.header)
                         ToolbarImageButton(
                             action: { observedWebView.selectedWebView?.addRow(.after) },
                             onHover: { over in addHoverLabel = Text(over ? "Add Row Below" : "Add") }

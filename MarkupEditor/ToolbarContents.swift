@@ -122,9 +122,11 @@ public struct FormatContents {
 
 /// Identify whether to allow table borders to be specified
 public struct TableContents {
+    public var header: Bool
     public var border: Bool
     
-    public init(border: Bool = true) {
+    public init(header: Bool = true, border: Bool = true) {
+        self.header = header
         self.border = border
     }
 }

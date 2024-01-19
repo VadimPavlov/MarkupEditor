@@ -104,8 +104,8 @@ struct TableIconBorder: View {
     private struct EdgeColor {
         static let activeBorder: Color = Color(UIColor.systemBackground)
         static let activeOutline: Color = Color(UIColor.systemBackground)
-        static let inactiveBorder: Color = .accentColor
-        static let inactiveOutline: Color = .accentColor
+        static let inactiveBorder: Color = ToolbarStyle.accentColor
+        static let inactiveOutline: Color = ToolbarStyle.accentColor
     }
 
     private struct EdgeWidth {
